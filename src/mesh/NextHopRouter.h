@@ -1,8 +1,10 @@
 #pragma once
 
 #include "FloodingRouter.h"
+#include <optional>
 #include <unordered_map>
 
+#ifndef FLAMINGO_MAX_REXMIT
 /**
  * An identifier for a globally unique message - a pair of the sending nodenum and the packet id assigned
  * to that message
@@ -48,6 +50,8 @@ class GlobalPacketIdHashFunction
     size_t operator()(const GlobalPacketId &p) const { return (std::hash<NodeNum>()(p.node)) ^ (std::hash<PacketId>()(p.id)); }
 };
 
+#endif
+
 /*
   Router for direct messages, which only relays if it is the next hop for a packet. The next hop is set by the current
   relayer of a packet, which bases this on information from a previous successful delivery to the destination via flooding.
@@ -87,7 +91,11 @@ class NextHopRouter : public FloodingRouter
     }
 
     // The number of retransmissions intermediate nodes will do (actually 1 less than this)
-    constexpr static uint8_t NUM_INTERMEDIATE_RETX = 2;
+#ifdef FLAMINGO_MAX_REXMIT
+    constexpr static uint8_t NUM_INTERMEDIATE_RETX = FLAMINGO_MAX_REXMIT + 1;
+#else
+    constexpr static uint8_t NUM_INTERMEDIATE_RETX = 3;
+#endif
     // The number of retransmissions the original sender will do
     constexpr static uint8_t NUM_RELIABLE_RETX = 3;
 
@@ -146,9 +154,13 @@ class NextHopRouter : public FloodingRouter
      * Get the next hop for a destination, given the relay node
      * @return the node number of the next hop, 0 if no preference (fallback to FloodingRouter)
      */
-    uint8_t getNextHop(NodeNum to, uint8_t relay_node);
+    std::optional<uint8_t> getNextHop(NodeNum to, uint8_t relay_node);
 
-    /** Check if we should be relaying this packet if so, do so.
-     *  @return true if we did relay */
-    bool perhapsRelay(const meshtastic_MeshPacket *p);
+    /** Check if we should be rebroadcasting this packet if so, do so.
+     *  @return true if we did rebroadcast */
+#ifdef FLAMINGO_MAX_REXMIT
+    bool perhapsRebroadcast(const meshtastic_MeshPacket *p);
+#else
+    bool perhapsRebroadcast(const meshtastic_MeshPacket *p) override;
+#endif
 };

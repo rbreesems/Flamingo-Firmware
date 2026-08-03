@@ -7,10 +7,12 @@
 #include "../concurrency/Periodic.h"
 #include "BluetoothCommon.h" // needed for updateBatteryLevel, FIXME, eventually when we pull mesh out into a lib we shouldn't be whacking bluetooth from here
 #include "MeshService.h"
+#include "MessageStore.h"
 #include "NodeDB.h"
 #include "PowerFSM.h"
 #include "RTC.h"
 #include "TypeConversions.h"
+#include "graphics/draw/MessageRenderer.h"
 #include "main.h"
 #include "mesh-pb-constants.h"
 #include "meshUtils.h"
@@ -63,6 +65,27 @@ Allocator<meshtastic_QueueStatus> &queueStatusPool = staticQueueStatusPool;
 
 #include "Router.h"
 
+#ifdef FLAMINGO
+int8_t rtDynamicEnabled = 0;  // if '1', then send range test packets if range test enabled
+int8_t rtHop = 0;  // If '1', then range test packets will hop
+
+uint8_t getRtDynanmicEnable() {
+    return rtDynamicEnabled;
+}
+
+void setRtDynamicEnable(uint8_t v){
+    rtDynamicEnabled = v;
+}
+
+uint8_t getRtHop() {
+    return rtHop;
+}
+
+void setRtHop(uint8_t v) {
+    rtHop = v;
+}
+#endif
+
 MeshService::MeshService()
 #ifdef ARCH_PORTDUINO
     : toPhoneQueue(MAX_RX_TOPHONE), toPhoneQueueStatusQueue(MAX_RX_QUEUESTATUS_TOPHONE),
@@ -86,19 +109,17 @@ int MeshService::handleFromRadio(const meshtastic_MeshPacket *mp)
 
     nodeDB->updateFrom(*mp); // update our DB state based off sniffing every RX packet from the radio
     bool isPreferredRebroadcaster =
-        IS_ONE_OF(config.device.role, meshtastic_Config_DeviceConfig_Role_ROUTER, meshtastic_Config_DeviceConfig_Role_REPEATER);
+        IS_ONE_OF(config.device.role, meshtastic_Config_DeviceConfig_Role_ROUTER, meshtastic_Config_DeviceConfig_Role_ROUTER_LATE,
+                  meshtastic_Config_DeviceConfig_Role_CLIENT_BASE);
     if (mp->which_payload_variant == meshtastic_MeshPacket_decoded_tag &&
         mp->decoded.portnum == meshtastic_PortNum_TELEMETRY_APP && mp->decoded.request_id > 0) {
-        LOG_DEBUG("Received telemetry response. Skip sending our NodeInfo"); //  because this potentially a Repeater which will
-                                                                             //  ignore our request for its NodeInfo
+        LOG_DEBUG("Received telemetry response. Skip sending our NodeInfo");
+        //  ignore our request for its NodeInfo
     } else if (mp->which_payload_variant == meshtastic_MeshPacket_decoded_tag && !nodeDB->getMeshNode(mp->from)->has_user &&
                nodeInfoModule && !isPreferredRebroadcaster && !nodeDB->isFull()) {
         if (airTime->isTxAllowedChannelUtil(true)) {
-            // Hops used by the request. If somebody in between running modified firmware modified it, ignore it
-            auto hopStart = mp->hop_start;
-            auto hopLimit = mp->hop_limit;
-            uint8_t hopsUsed = hopStart < hopLimit ? config.lora.hop_limit : hopStart - hopLimit;
-            if (hopsUsed > config.lora.hop_limit + 2) {
+            const int8_t hopsUsed = getHopsAway(*mp, config.lora.hop_limit);
+            if (hopsUsed > (int32_t)(config.lora.hop_limit + 2)) {
                 LOG_DEBUG("Skip send NodeInfo: %d hops away is too far away", hopsUsed);
             } else {
                 LOG_INFO("Heard new node on ch. %d, send NodeInfo and ask for response", mp->channel);
@@ -193,8 +214,14 @@ void MeshService::handleToRadio(meshtastic_MeshPacket &p)
         p.id = generatePacketId(); // If the phone didn't supply one, then pick one
 
     p.rx_time = getValidTime(RTCQualityFromNet); // Record the time the packet arrived from the phone
-                                                 // (so we update our nodedb for the local node)
 
+    IF_SCREEN(if (p.decoded.portnum == meshtastic_PortNum_TEXT_MESSAGE_APP && p.decoded.payload.size > 0 &&
+                  p.to != NODENUM_BROADCAST && p.to != 0) // DM only
+              {
+                  perhapsDecode(&p);
+                  const StoredMessage &sm = messageStore.addFromPacket(p);
+                  graphics::MessageRenderer::handleNewMessage(nullptr, sm, p); // notify UI
+              })
     // Send the packet into the mesh
     DEBUG_HEAP_BEFORE;
     auto a = packetPool.allocCopy(p);
@@ -277,6 +304,10 @@ bool MeshService::trySendPosition(NodeNum dest, bool wantReplies)
     if (nodeDB->hasValidPosition(node)) {
 #if HAS_GPS && !MESHTASTIC_EXCLUDE_GPS
         if (positionModule) {
+            if (!config.position.fixed_position && !nodeDB->hasLocalPositionSinceBoot()) {
+                LOG_DEBUG("Skip position ping; no fresh position since boot");
+                return false;
+            }
             LOG_INFO("Send position ping to 0x%x, wantReplies=%d, channel=%d", dest, wantReplies, node->channel);
             positionModule->sendOurPosition(dest, wantReplies, node->channel);
             return true;

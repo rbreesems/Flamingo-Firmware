@@ -6,18 +6,41 @@
 #include "PointerQueue.h"
 #include "airtime.h"
 #include "error.h"
+#include <memory>
+
+#if HAS_LORA_FEM
+#include "LoRaFEMInterface.h"
+#endif
+
+// Forward decl to avoid a direct include of generated config headers / full LoRaConfig definition in this widely-included file.
+typedef struct _meshtastic_Config_LoRaConfig meshtastic_Config_LoRaConfig;
 
 #define MAX_TX_QUEUE 16 // max number of packets which can be waiting for transmission
 
 #define MAX_LORA_PAYLOAD_LEN 255 // max length of 255 per Semtech's datasheets on SX12xx
+#ifdef FLAMINGO
+#define MESHTASTIC_HEADER_LENGTH 20
+#else
 #define MESHTASTIC_HEADER_LENGTH 16
+#endif
 #define MESHTASTIC_PKC_OVERHEAD 12
 
+#ifdef FLAMINGO
+#define PACKET_FLAGS_HOP_LIMIT_MASK HOP_MAX
+#define PACKET_FLAGS_WANT_ACK_MASK 0x08
+#define PACKET_FLAGS_VIA_MQTT_MASK 0x10
+#define PACKET_FLAGS_HOP_START_MASK HOP_MAX
+#define PACKET_FLAGS_HOP_START_SHIFT 0
+
+#define PACKET_HEADER_MAGIC_NUMBER 0xA5C3
+#else
 #define PACKET_FLAGS_HOP_LIMIT_MASK 0x07
 #define PACKET_FLAGS_WANT_ACK_MASK 0x08
 #define PACKET_FLAGS_VIA_MQTT_MASK 0x10
 #define PACKET_FLAGS_HOP_START_MASK 0xE0
 #define PACKET_FLAGS_HOP_START_SHIFT 5
+#endif
+
 
 /**
  * This structure has to exactly match the wire layout when sent over the radio link.  Used to keep compatibility
@@ -43,6 +66,18 @@ typedef struct {
 
     // Last byte of the NodeNum of the node that will relay/relayed this packet
     uint8_t relay_node;
+#ifdef FLAMINGO
+    uint8_t hop_limit;   // new place for hop_limit
+
+    uint8_t hop_start;   // new place for hop_start
+
+    /**  
+    * a magicnum so that we quickly detect incompatible packets
+    * and discard without wasting cycles decoding
+    **/
+
+    uint16_t magicnum;
+#endif   
 } PacketHeader;
 
 /**
@@ -54,8 +89,16 @@ typedef struct {
     /** The header, as defined just before */
     PacketHeader header;
 
-    /** The payload, of maximum length minus the header, aligned just to be sure */
+#ifdef FLAMINGO
+     /** The payload, of maximum length minus the header, aligned just to be sure 
+     * This only needs to be aligned on a four byte boundary.  
+     * Must be four bytes for new header to work correctly.
+    */
+    uint8_t payload[MAX_LORA_PAYLOAD_LEN + 1 - sizeof(PacketHeader)] __attribute__((aligned(4)));
+#else
+     /** The payload, of maximum length minus the header, aligned just to be sure */
     uint8_t payload[MAX_LORA_PAYLOAD_LEN + 1 - sizeof(PacketHeader)] __attribute__((__aligned__));
+#endif
 
 } RadioBuffer;
 
@@ -87,9 +130,8 @@ class RadioInterface
     const uint8_t NUM_SYM_CAD = 2;       // Number of symbols used for CAD, 2 is the default since RadioLib 6.3.0 as per AN1200.48
     const uint8_t NUM_SYM_CAD_24GHZ = 4; // Number of symbols used for CAD in 2.4 GHz, 4 is recommended in AN1200.22 of SX1280
     uint32_t slotTimeMsec = computeSlotTimeMsec();
-    uint16_t preambleLength = 16;      // 8 is default, but we use longer to increase the amount of sleep time when receiving
-    uint32_t preambleTimeMsec = 165;   // calculated on startup, this is the default for LongFast
-    uint32_t maxPacketTimeMsec = 3246; // calculated on startup, this is the default for LongFast
+    uint16_t preambleLength = 16;    // 8 is default, but we use longer to increase the amount of sleep time when receiving
+    uint32_t preambleTimeMsec = 165; // calculated on startup, this is the default for LongFast
     const uint32_t PROCESSING_TIME_MSEC =
         4500;                // time to construct, process and construct a packet again (empirically determined)
     const uint8_t CWmin = 3; // minimum CWsize
@@ -100,10 +142,18 @@ class RadioInterface
 
     uint32_t computeSlotTimeMsec();
 
+#ifdef FLAMINGO
+    /**
+     * A temporary buffer used for sending/receiving packets, sized to hold the biggest buffer we might need
+     * This only needs to be aligned on a four byte boundary. Must be four bytes for new header to work correctly.
+     * */
+    RadioBuffer radioBuffer  __attribute__((aligned(4)));
+#else
     /**
      * A temporary buffer used for sending/receiving packets, sized to hold the biggest buffer we might need
      * */
     RadioBuffer radioBuffer __attribute__((__aligned__));
+#endif
     /**
      * Enqueue a received packet for the registered receiver
      */
@@ -115,6 +165,12 @@ class RadioInterface
     RadioInterface();
 
     virtual ~RadioInterface() {}
+
+    /**
+     * Coerce LoRa config fields (bandwidth/spread_factor) derived from presets.
+     * This is used during early bootstrapping so UIs that display these fields directly remain consistent.
+     */
+    static void bootstrapLoRaConfigFromPreset(meshtastic_Config_LoRaConfig &loraConfig);
 
     /**
      * Return true if we think the board can go to sleep (i.e. our tx queue is empty, we are not sending or receiving)
@@ -143,7 +199,7 @@ class RadioInterface
     virtual ErrorCode send(meshtastic_MeshPacket *p) = 0;
 
     /** Return TX queue status */
-    virtual meshtastic_QueueStatus getQueueStatus()
+    [[nodiscard]] virtual meshtastic_QueueStatus getQueueStatus()
     {
         meshtastic_QueueStatus qs;
         qs.res = qs.mesh_packet_id = qs.free = qs.maxlen = 0;
@@ -169,25 +225,31 @@ class RadioInterface
     virtual bool reconfigure();
 
     /** The delay to use for retransmitting dropped packets */
-    uint32_t getRetransmissionMsec(const meshtastic_MeshPacket *p);
+    [[nodiscard]] uint32_t getRetransmissionMsec(const meshtastic_MeshPacket *p);
 
     /** The delay to use when we want to send something */
-    uint32_t getTxDelayMsec();
+    [[nodiscard]] uint32_t getTxDelayMsec();
 
     /** The CW to use when calculating SNR_based delays */
-    uint8_t getCWsize(float snr);
+    [[nodiscard]] uint8_t getCWsize(float snr);
 
     /** The worst-case SNR_based packet delay */
-    uint32_t getTxDelayMsecWeightedWorst(float snr);
+    [[nodiscard]] uint32_t getTxDelayMsecWeightedWorst(float snr);
 
     /** Returns true if we should rebroadcast early like a ROUTER */
-    bool shouldRebroadcastEarlyLikeRouter(meshtastic_MeshPacket *p);
+    [[nodiscard]] bool shouldRebroadcastEarlyLikeRouter(meshtastic_MeshPacket *p);
 
     /** The delay to use when we want to flood a message. Use a weighted scale based on SNR */
-    uint32_t getTxDelayMsecWeighted(meshtastic_MeshPacket *p);
+    [[nodiscard]] uint32_t getTxDelayMsecWeighted(meshtastic_MeshPacket *p);
 
     /** If the packet is not already in the late rebroadcast window, move it there */
     virtual void clampToLateRebroadcastWindow(NodeNum from, PacketId id) { return; }
+
+    /**
+     * If there is a packet pending TX in the queue with a worse hop limit, remove it pending replacement with a better version
+     * @return Whether a pending packet was removed
+     */
+    virtual bool removePendingTXPacket(NodeNum from, PacketId id, uint32_t hop_limit_lt) { return false; }
 
     /**
      * Calculate airtime per
@@ -196,18 +258,18 @@ class RadioInterface
      *
      * @return num msecs for the packet
      */
-    uint32_t getPacketTime(const meshtastic_MeshPacket *p);
-    uint32_t getPacketTime(uint32_t totalPacketLen);
+    [[nodiscard]] uint32_t getPacketTime(const meshtastic_MeshPacket *p, bool received = false);
+    [[nodiscard]] virtual uint32_t getPacketTime(uint32_t totalPacketLen, bool received = false) = 0;
 
     /**
      * Get the channel we saved.
      */
-    uint32_t getChannelNum();
+    [[nodiscard]] uint32_t getChannelNum();
 
     /**
      * Get the frequency we saved.
      */
-    virtual float getFreq();
+    [[nodiscard]] virtual float getFreq();
 
     /// Some boards (1st gen Pinetab Lora module) have broken IRQ wires, so we need to poll via i2c registers
     virtual bool isIRQPending() { return false; }
@@ -227,7 +289,7 @@ class RadioInterface
      *
      * Used as the first step of
      */
-    size_t beginSending(meshtastic_MeshPacket *p);
+    [[nodiscard]] size_t beginSending(meshtastic_MeshPacket *p);
 
     /**
      * Some regulatory regions limit xmit power.
@@ -244,6 +306,12 @@ class RadioInterface
      * Save the channel we selected for later reuse.
      */
     virtual void saveChannelNum(uint32_t savedChannelNum);
+
+    /**
+     * Get current RSSI reading from the radio.
+     * Returns 0 if not available.
+     */
+    virtual int16_t getCurrentRSSI() { return 0; }
 
   private:
     /**
@@ -264,6 +332,8 @@ class RadioInterface
         return 0;
     }
 };
+
+std::unique_ptr<RadioInterface> initLoRa();
 
 /// Debug printing for packets
 void printPacket(const char *prefix, const meshtastic_MeshPacket *p);

@@ -1,4 +1,4 @@
-#define LED_PIN LED
+#define LED_POWER LED
 
 #define USE_SSD1306 // Heltec_v3 has a SSD1306 display
 
@@ -40,3 +40,5 @@
 
 #define SX126X_DIO2_AS_RF_SWITCH
 #define SX126X_DIO3_TCXO_VOLTAGE 1.8
+
+#define HAS_32768HZ 1

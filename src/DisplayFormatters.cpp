@@ -31,6 +31,9 @@ const char *DisplayFormatters::getModemPresetDisplayName(meshtastic_Config_LoRaC
     case meshtastic_Config_LoRaConfig_ModemPreset_LONG_FAST:
         return useShortName ? "LongF" : "LongFast";
         break;
+    case meshtastic_Config_LoRaConfig_ModemPreset_LONG_TURBO:
+        return useShortName ? "LongT" : "LongTurbo";
+        break;
     case meshtastic_Config_LoRaConfig_ModemPreset_LONG_MODERATE:
         return useShortName ? "LongM" : "LongMod";
         break;
@@ -75,9 +78,6 @@ const char *DisplayFormatters::getDeviceRole(meshtastic_Config_DeviceConfig_Role
         break;
     case meshtastic_Config_DeviceConfig_Role_ROUTER_LATE:
         return "Router Late";
-        break;
-    case meshtastic_Config_DeviceConfig_Role_REPEATER:
-        return "Repeater";
         break;
     default:
         return "Unknown";

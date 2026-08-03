@@ -6,7 +6,6 @@
 #define GPS_TX_PIN 15
 #define GPS_RX_PIN 12
 #define PIN_GPS_EN 4
-#define GPS_POWER_TOGGLE // Moved definition from platformio.ini to here
 
 #define BUTTON_PIN 39 // The middle button GPIO on the T-Beam
 // Note: On the ESP32 base version, gpio34-39 are input-only, and do not have internal pull-ups.
@@ -16,7 +15,7 @@
 #define ADC_MULTIPLIER 1.85 // (R1 = 470k, R2 = 680k)
 #define EXT_PWR_DETECT 4    // Pin to detect connected external power source for LILYGO® TTGO T-Energy T18 and other DIY boards
 #define EXT_NOTIFY_OUT 12   // Overridden default pin to use for Ext Notify Module (#975).
-#define LED_PIN 2           // add status LED (compatible with core-pcb and DIY targets)
+#define LED_POWER 2         // add status LED (compatible with core-pcb and DIY targets)
 
 // Radio
 #define USE_SX1262 // E22-900M30S uses SX1262
